@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.2";
+const VERSION = "手機版 1.3";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -640,6 +640,16 @@ function reminders() {
 function syncAlarms() {   // 每次資料改了或打開 App：把接下來 35 天的提醒整批交給 App 重排
   if (window.CalBridge && CalBridge.setAlarms) {
     try { CalBridge.setAlarms(JSON.stringify(reminders())); } catch (e) { /* 舊版 App 沒有這個功能 */ }
+  }
+  if (window.CalBridge && CalBridge.setWidget) {   // 桌面小工具：接下來 3 週的班＋之後的回診（小工具自己照日期挑今天）
+    const days = {}, d0 = today();
+    for (let i = -1; i <= 21; i++) {
+      const ds = addDays(d0, i), s = DB.shifts[ds];
+      if (s && s.kind) days[ds] = {t: title(s), k: s.kind};
+    }
+    const events = DB.events.filter(e => e.date >= d0).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)).slice(0, 6)
+      .map(e => ({d: e.date, t: `${e.time ? e.time + " " : ""}${e.title}`}));
+    try { CalBridge.setWidget(JSON.stringify({days, events})); } catch (e) { /* 舊版 App 沒有這個功能 */ }
   }
 }
 function remindCard() {
