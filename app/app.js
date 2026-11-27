@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.5";
+const VERSION = "手機版 1.6";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -318,9 +318,14 @@ function renderSet() {
     `<div class="btns"><button class="primary" data-act="savetbl">存起來</button><button data-act="deftbl">回到預設</button></div></div>`;
 
   h += `<div class="card"><h3>💾 備份</h3><p class="muted">資料只存在這支手機。換手機或清除 App 資料前，先複製備份（存到記事本或傳給自己）。</p>` +
-    `<div class="btns"><button data-act="export">📤 複製備份</button><button data-act="impshow">📥 匯入備份</button></div>` +
+    `<div class="btns"><button data-act="export">📤 複製備份</button><button data-act="impshow">📥 匯入備份</button>` +
+    (window.CalBridge && CalBridge.backupPc ? `<button data-act="bkpc">💻 備份到電腦</button>` : "") + `</div>` +
+    (window.CalBridge && CalBridge.backupPc ? `<p class="muted" id="bkpcmsg">備份到電腦要開 Tailscale，電腦每次都留一份（最多 60 份）。` +
+      `${DB.settings.bkpc_last ? `上次：${esc(DB.settings.bkpc_last)}` : ""}</p>` : "") +
     `<div id="impbox" hidden><textarea id="imptext" rows="4" placeholder="把備份貼在這裡"></textarea>` +
     `<input type="file" id="impfile" accept=".json,application/json,text/plain"><button class="primary" data-act="impgo">匯入</button></div></div>`;
+
+  h += calCard();
 
   h += `<div class="card"><h3>ℹ️ 關於</h3><p class="muted">行事曆 ${VERSION}${IS_BETA ? "（測試版）" : ""}・程式放在網路上、打開時自動更新；` +
     `班表、回診只存在手機，不會上傳。</p>` +
@@ -381,10 +386,13 @@ function mergeIn(o, fromPc) {
   return [ns, ne];
 }
 
-async function exportCopy() {
+function backupText() {
   const settings = Object.fromEntries(Object.entries(DB.settings).filter(([k]) => k !== "gkey"));   // 金鑰不放進備份
-  const text = JSON.stringify({app: "calphone", version: VERSION, at: new Date().toISOString(),
-                               settings, shifts: DB.shifts, events: DB.events});
+  return JSON.stringify({app: "calphone", version: VERSION, at: new Date().toISOString(),
+                         settings, shifts: DB.shifts, events: DB.events});
+}
+async function exportCopy() {
+  const text = backupText();
   try {
     await navigator.clipboard.writeText(text);
     toast("備份已複製，貼到記事本或 LINE 傳給自己存著", 4000);
@@ -567,6 +575,9 @@ document.addEventListener("click", async ev => {
     save(); render(); return toast("提醒設定存好了");
   }
   if (act === "testgem") return testGem();
+  if (act === "bkpc") { $("#bkpcmsg").textContent = "傳到電腦中…"; return CalBridge.backupPc(backupText()); }
+  if (act === "calperm") return CalBridge.askCal();
+  if (act === "calsave") return calSave();
   if (act === "rmdtest") { window.CalBridge.testAlarm(); return toast("10 秒後會跳一則測試提醒"); }
   if (act === "rmdperm") { window.CalBridge.askNotify(); return; }
 });
@@ -587,6 +598,96 @@ function openEvent(e) {
     `<div class="btns"><button class="primary" data-act="evsave">存起來</button>${EV.id ? `<button class="danger" data-act="evdel">刪掉</button>` : ""}<button data-close>取消</button></div>`;
   openSheet(h);
 }
+// ════════════ 1.6（2026-11-27 行事曆第 5 步＋備份到電腦，要外殼 APK 1.4） ════════════
+const CAL_APP = () => !!(window.CalBridge && CalBridge.calList);
+const SIG = "calphone.calsig";
+let calPending = null;
+/** 要寫進手機日曆的清單：前 7 天～後 90 天的班（上班的有時間、休假類全天）＋回診／行程 */
+function calEvents() {
+  const out = [], d0 = today(), from = addDays(d0, -7), to = addDays(d0, 90);
+  const at = (ds, t) => new Date(`${ds}T${t}:00+08:00`).getTime();
+  const allDay = ds => { const [y, m, d] = ds.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  for (const [ds, s] of Object.entries(DB.shifts)) {
+    if (ds < from || ds > to || !s || !s.kind) continue;
+    if (s.kind in DEFAULT_TIME) {
+      const t = s.time || DEFAULT_TIME[s.kind], [end, how] = shiftEnd(s.kind, t);
+      const st = at(ds, t), en = at(end <= t ? addDays(ds, 1) : ds, end || t);
+      out.push({t: NAME[s.kind] + (s.ot ? "（國定加班）" : ""), s: st, e: Math.max(en, st + 3600000), a: false,
+                d: how === "vague" ? "下班時間看情況" : "", l: ""});
+    } else {
+      const st = allDay(ds);
+      out.push({t: NAME[s.kind] || s.kind, s: st, e: st + 86400000, a: true, d: "", l: ""});
+    }
+  }
+  for (const e of DB.events) {
+    if (e.date < from || e.date > to) continue;
+    const title = `${e.kind === "行程" ? "📌" : "🏥"} ${e.title || e.kind || "回診"}`;
+    const d = [e.dept, e.bring && "帶：" + e.bring, e.note].filter(Boolean).join("\n");
+    if (e.time) { const st = at(e.date, e.time); out.push({t: title, s: st, e: st + 3600000, a: false, d, l: e.place || ""}); }
+    else { const st = allDay(e.date); out.push({t: title, s: st, e: st + 86400000, a: true, d, l: e.place || ""}); }
+  }
+  return out.sort((a, b) => a.s - b.s);
+}
+/** 資料或日期變了才重寫（打開 App、改班、加回診時自動跑） */
+function calAuto(force) {
+  const id = DB.settings.cal_id;
+  if (!CAL_APP() || !id) return;
+  const list = JSON.stringify(calEvents()), sig = id + "|" + list;
+  let old = null;
+  try { old = localStorage.getItem(SIG); } catch (e) { /* 拿不到就重寫 */ }
+  if (!force && sig === old) return;
+  calPending = sig;
+  CalBridge.calSync(String(id), list);
+}
+window.onCalSync = function (n, err) {
+  const msg = $("#calmsg");
+  if (err) { if (msg) msg.textContent = "❌ " + err; return; }
+  try { localStorage.setItem(SIG, calPending || ""); } catch (e) { /* 下次再重寫 */ }
+  DB.settings.cal_last = `${stamp()}・${n} 筆`;
+  save();
+  if (msg) msg.textContent = `✅ 寫好了：${DB.settings.cal_last}`;
+};
+window.onCalPerm = function (ok) {
+  if (!ok) toast("沒有允許存取日曆：要用的話到手機「設定 → 應用程式 → 行事曆手機版 → 權限」打開日曆", 6000);
+  render();
+};
+window.onBackupPc = function (body, err) {
+  const msg = $("#bkpcmsg");
+  let r = null;
+  try { r = body && JSON.parse(body); } catch (e) { /* 下面當失敗 */ }
+  if (err || !r || !r.ok) { const m = "❌ " + (err || (r && r.error) || "電腦回的資料看不懂"); if (msg) msg.textContent = m; return toast(m, 5000); }
+  DB.settings.bkpc_last = `${stamp()}（${r.data.shifts} 天班、${r.data.events} 筆回診）`;
+  save();
+  if (msg) msg.textContent = `✅ 存到電腦了：${DB.settings.bkpc_last}`;
+  toast("備份存到電腦了", 3000);
+};
+function calCard() {
+  if (!CAL_APP()) return `<div class="card"><h3>📆 寫進手機日曆</h3><p class="muted">要在 Fold8 的「行事曆手機版」App（1.4 以上）裡才能用。</p></div>`;
+  let h = `<div class="card"><h3>📆 寫進手機日曆</h3><p class="muted">把班表（前 7 天～後 90 天）和回診寫進三星／Google 日曆，改了會自動跟著改。` +
+    `選 Google 帳號的日曆，Google 日曆和三星日曆都看得到。日曆裡不加提醒（這個 App 自己會提醒）。</p>`;
+  let st = {};
+  try { st = JSON.parse(CalBridge.calStatus()); } catch (e) { /* 舊版 App */ }
+  if (!st.perm) return h + `<button class="primary" data-act="calperm">允許存取日曆</button></div>`;
+  let cals = [];
+  try { cals = JSON.parse(CalBridge.calList()); } catch (e) { /* 沒有 */ }
+  const cur = String(DB.settings.cal_id || "");
+  h += `<label class="line">寫到 <select id="calsel"><option value="">（不寫進日曆）</option>` +
+    cals.map(c => `<option value="${c.id}"${String(c.id) === cur ? " selected" : ""}>${esc(c.name)}${c.account && c.account !== c.name ? `（${esc(c.account)}）` : ""}</option>`).join("") +
+    `</select></label><button class="primary" data-act="calsave">存起來並寫入</button>` +
+    `<p class="muted" id="calmsg">${cur ? (DB.settings.cal_last ? `上次寫入：${esc(DB.settings.cal_last)}` : "") : "現在沒有寫進日曆。"}</p></div>`;
+  return h;
+}
+function calSave() {
+  const v = $("#calsel").value, old = String(DB.settings.cal_id || "");
+  if (old && v !== old) { const n = CalBridge.calOff(); toast(`從原本的日曆拿掉 ${n} 筆`, 3000); }
+  try { localStorage.removeItem(SIG); } catch (e) { /* 沒關係 */ }
+  if (!v) { DB.settings.cal_id = ""; DB.settings.cal_last = ""; save(); render(); return toast("不寫進日曆了"); }
+  DB.settings.cal_id = v;
+  save();
+  $("#calmsg").textContent = "寫入中…";
+  calAuto(true);
+}
+
 /** 1.4（2026-11-27 使用者要）：設定頁「測試金鑰」——只列模型清單，不叫 Gemini 讀東西，不用掉每天的免費次數 */
 async function testGem() {
   const key = $("#gkey").value.trim(), out = $("#gtest");
@@ -671,6 +772,7 @@ function reminders() {
   return out.sort((a, b) => a.at - b.at).slice(0, 60);
 }
 function syncAlarms() {   // 每次資料改了或打開 App：把接下來 35 天的提醒整批交給 App 重排
+  calAuto();
   if (window.CalBridge && CalBridge.setAlarms) {
     try { CalBridge.setAlarms(JSON.stringify(reminders())); } catch (e) { /* 舊版 App 沒有這個功能 */ }
   }
