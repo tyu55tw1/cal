@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.6";
+const VERSION = "手機版 1.7";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -320,7 +320,8 @@ function renderSet() {
   h += `<div class="card"><h3>💾 備份</h3><p class="muted">資料只存在這支手機。換手機或清除 App 資料前，先複製備份（存到記事本或傳給自己）。</p>` +
     `<div class="btns"><button data-act="export">📤 複製備份</button><button data-act="impshow">📥 匯入備份</button>` +
     (window.CalBridge && CalBridge.backupPc ? `<button data-act="bkpc">💻 備份到電腦</button>` : "") + `</div>` +
-    (window.CalBridge && CalBridge.backupPc ? `<p class="muted" id="bkpcmsg">備份到電腦要開 Tailscale，電腦每次都留一份（最多 60 份）。` +
+    (window.CalBridge && CalBridge.backupPc ? `<p class="muted" id="bkpcmsg">備份到電腦要開 Tailscale，電腦每次都留一份（最多 60 份），` +
+      `也存一份到 Google 雲端硬碟「行事曆備份」資料夾。要還原：按「📥 匯入備份」→ 選檔案 → 雲端硬碟 → 行事曆備份 → 挑最新的。` +
       `${DB.settings.bkpc_last ? `上次：${esc(DB.settings.bkpc_last)}` : ""}</p>` : "") +
     `<div id="impbox" hidden><textarea id="imptext" rows="4" placeholder="把備份貼在這裡"></textarea>` +
     `<input type="file" id="impfile" accept=".json,application/json,text/plain"><button class="primary" data-act="impgo">匯入</button></div></div>`;
@@ -658,8 +659,8 @@ window.onBackupPc = function (body, err) {
   if (err || !r || !r.ok) { const m = "❌ " + (err || (r && r.error) || "電腦回的資料看不懂"); if (msg) msg.textContent = m; return toast(m, 5000); }
   DB.settings.bkpc_last = `${stamp()}（${r.data.shifts} 天班、${r.data.events} 筆回診）`;
   save();
-  if (msg) msg.textContent = `✅ 存到電腦了：${DB.settings.bkpc_last}`;
-  toast("備份存到電腦了", 3000);
+  if (msg) msg.textContent = `✅ 存到電腦了${r.data.drive ? "（雲端硬碟「行事曆備份」也有一份）" : ""}：${DB.settings.bkpc_last}`;
+  toast(r.data.drive ? "備份存到電腦和雲端硬碟了" : "備份存到電腦了", 3000);
 };
 function calCard() {
   if (!CAL_APP()) return `<div class="card"><h3>📆 寫進手機日曆</h3><p class="muted">要在 Fold8 的「行事曆手機版」App（1.4 以上）裡才能用。</p></div>`;
