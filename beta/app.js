@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.7";
+const VERSION = "手機版 1.8";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -161,7 +161,19 @@ function toast(msg, ms = 2600) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { t.hidden = true; }, ms);
 }
+// 1.8（2026-11-28 使用者）：設定頁要指紋或螢幕鎖密碼才能進（外殼 1.5 的 CalBridge.auth）；驗過 5 分鐘內再進不用再驗，
+// 停在設定頁時一直算有效；舊外殼沒有 auth 就不鎖
+let authAt = 0;
+const needAuth = () => !!(window.CalBridge && CalBridge.auth) && Date.now() - authAt > 5 * 60000;
+function renderLock() {
+  $("#pane-set").innerHTML = `<div class="card hint"><h3>🔒 設定已上鎖</h3><p class="muted">裡面有金鑰、備份和清除資料，要用指紋或螢幕鎖密碼驗證才能進。</p>` +
+    `<button class="primary" data-act="unlock">🔓 驗證後打開設定</button></div>`;
+}
+window.onAuth = function (ok) {
+  if (ok) { authAt = Date.now(); render(); } else toast("沒有驗證成功，設定還是鎖著", 3000);
+};
 function setTab(t) {
+  if (t === "set" && tab !== "set" && needAuth()) setTimeout(() => CalBridge.auth("打開行事曆設定"), 50);
   tab = t;
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   document.body.dataset.tab = t;
@@ -575,6 +587,7 @@ document.addEventListener("click", async ev => {
     DB.settings.before_hours = Math.max(0.5, Math.min(12, +$("#r-before").value || 2));
     save(); render(); return toast("提醒設定存好了");
   }
+  if (act === "unlock") return CalBridge.auth("打開行事曆設定");
   if (act === "testgem") return testGem();
   if (act === "bkpc") { $("#bkpcmsg").textContent = "傳到電腦中…"; return CalBridge.backupPc(backupText()); }
   if (act === "calperm") return CalBridge.askCal();
@@ -809,7 +822,7 @@ function render() {
   const both = wide.matches && (tab === "today" || tab === "month");
   if (tab === "today" || both) renderToday();
   if (tab === "month" || both) renderMonth();
-  if (tab === "set") renderSet();
+  if (tab === "set") { if (needAuth()) renderLock(); else { authAt = Date.now(); renderSet(); } }
   clearTimeout(render._t);
   render._t = setTimeout(syncAlarms, 300);
 }
