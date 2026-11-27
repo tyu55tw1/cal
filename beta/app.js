@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.3";
+const VERSION = "手機版 1.4";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -293,7 +293,8 @@ function renderSet() {
     `<label class="line">Gemini 金鑰 <input type="password" id="gkey" autocomplete="off" value="${esc(st.gkey || "")}" placeholder="AIza…"></label>` +
     `<label class="line">你是表上第 <input type="number" id="grow" min="1" max="40" value="${+st.row || ""}"> 個人（表頭下面從上往下數）</label>` +
     `<label class="line">名字（選填，幫 Gemini 找那一列）<input id="gname" value="${esc(st.name || "")}" maxlength="20"></label>` +
-    `<button class="primary" data-act="savegem">存起來</button></div>`;
+    `<div class="btns"><button class="primary" data-act="savegem">存起來</button><button data-act="testgem">測試金鑰</button></div>` +
+    `<p class="muted" id="gtest">測試金鑰不會用掉每天的讀班表次數。</p></div>`;
   h += remindCard();
 
   h += `<div class="card"><h3>🕐 班別時間表</h3><p class="muted">上班時間 → 下班時間。下班空白＝看情況（先算下面的小時數）；下班比上班早＝隔天下班。夜班固定 23:00。</p><div id="tbl">`;
@@ -551,6 +552,7 @@ document.addEventListener("click", async ev => {
     DB.settings.before_hours = Math.max(0.5, Math.min(12, +$("#r-before").value || 2));
     save(); render(); return toast("提醒設定存好了");
   }
+  if (act === "testgem") return testGem();
   if (act === "rmdtest") { window.CalBridge.testAlarm(); return toast("10 秒後會跳一則測試提醒"); }
   if (act === "rmdperm") { window.CalBridge.askNotify(); return; }
 });
@@ -571,6 +573,23 @@ function openEvent(e) {
     `<div class="btns"><button class="primary" data-act="evsave">存起來</button>${EV.id ? `<button class="danger" data-act="evdel">刪掉</button>` : ""}<button data-close>取消</button></div>`;
   openSheet(h);
 }
+/** 1.4（2026-11-27 使用者要）：設定頁「測試金鑰」——只列模型清單，不叫 Gemini 讀東西，不用掉每天的免費次數 */
+async function testGem() {
+  const key = $("#gkey").value.trim(), out = $("#gtest");
+  if (!key) { out.textContent = "先把金鑰貼進上面的格子。"; return; }
+  out.textContent = "測試中…";
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", {headers: {"x-goog-api-key": key}});
+    out.textContent = r.ok ? "✅ 金鑰可以用！記得按「存起來」。"
+      : r.status === 400 ? "❌ 金鑰不對：重新複製一次，前後不要多空白。"
+      : r.status === 403 ? "❌ 這把金鑰沒有開 Gemini 權限，或已經被停用：到 aistudio.google.com/apikey 換一把。"
+      : r.status === 429 ? "⏳ 金鑰是對的，但現在查太頻繁，等一下再試。"
+      : `❓ Gemini 回了 ${r.status}，等一下再試。`;
+  } catch (err) {
+    out.textContent = "📶 連不到 Gemini：看看有沒有網路。";
+  }
+}
+
 async function gemEvent(fn) {
   const box = $("#ev-res");
   box.innerHTML = `<p class="muted">Gemini 讀取中…</p>`;
