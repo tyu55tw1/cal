@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f5fb3">
+<meta name="referrer" content="no-referrer">
+<title>行事曆</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- 行事曆手機版（2026-11-27 起）：程式放 GitHub Pages（公開），班表、回診、設定只存在手機（localStorage），不送到任何地方 -->
+<div id="app">
+  <header class="top">
+    <h1 id="ttl">行事曆</h1>
+    <span id="beta" class="tag" hidden>測試版</span>
+  </header>
+  <main id="main">
+    <section id="pane-today" class="pane"></section>
+    <section id="pane-month" class="pane"></section>
+    <section id="pane-set" class="pane"></section>
+  </main>
+  <nav class="tabs">
+    <button data-tab="today" class="on">📌 今天</button>
+    <button data-tab="month">📅 月曆</button>
+    <button data-tab="set">⚙️ 設定</button>
+  </nav>
+</div>
+<div id="sheet" class="sheet" hidden><div class="sheet-box" id="sheet-box"></div></div>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
