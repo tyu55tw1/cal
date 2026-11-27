@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.1";
+const VERSION = "手機版 1.2";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -185,8 +185,9 @@ window.UI = {back() {
 
 function eventHtml(e, withDate) {
   const bits = [e.dept, e.place && "📍 " + e.place, e.bring && "帶：" + e.bring, e.note].filter(Boolean);
-  return `<div class="ev"><div class="ev-h">🏥 ${withDate ? esc(md(e.date)) + " " : ""}${esc(e.time || "")} ${esc(e.title || e.kind || "回診")}</div>` +
-    (bits.length ? `<div class="ev-d">${bits.map(esc).join("<br>")}</div>` : "") + "</div>";
+  return `<button class="ev" data-ev="${esc(e.id)}"><div class="ev-h">${e.kind === "行程" ? "📌" : "🏥"} ${withDate ? esc(md(e.date)) + " " : ""}` +
+    `${esc(e.time || "")} ${esc(e.title || e.kind || "回診")}</div>` +
+    (bits.length ? `<div class="ev-d">${bits.map(esc).join("<br>")}</div>` : "") + "</button>";
 }
 function chip(s) {
   if (!s || !s.kind) return `<span class="chip k-none">未排</span>`;
@@ -201,7 +202,8 @@ function renderToday() {
   if (!has) {
     h += `<div class="card hint"><b>手機裡還沒有班表</b><br>到「⚙️ 設定」按「📥 從電腦版搬過來」，或在月曆點一天自己填。</div>`;
   }
-  h += `<button class="primary shoot" data-act="shoot">📷 拍班表</button>`;
+  h += `<div class="btns top-btns"><button class="primary shoot" data-act="shoot">📷 拍班表</button>` +
+    `<button class="shoot" data-act="evnew">＋ 回診／行程</button></div>`;
   h += `<div class="card today"><div class="day">${esc(md(d0))} 今天</div><div class="big">${chip(s)}</div>`;
   if (y && y.kind === "夜") h += `<div class="sub">昨晚夜班，今天 ${esc(shiftEnd("夜", y.time)[0])} 下班</div>`;
   for (const e of eventsOn(d0)) h += eventHtml(e);
@@ -250,7 +252,7 @@ function openDay(ds) {
     `<button class="primary" data-saveday="${ds}">存起來</button>`;
   const evs = eventsOn(ds);
   if (evs.length) h += `<h3>這天的回診</h3>${evs.map(e => eventHtml(e)).join("")}`;
-  h += `<div class="muted small-t">回診的新增和修改在下一版加上；現在先從電腦版搬過來。</div>`;
+  h += `<div class="btns"><button data-act="evnew" data-date="${ds}">＋ 這天加回診／行程</button></div>`;
   openSheet(h);
   openDay.kind = s.kind || "";
 }
@@ -292,6 +294,7 @@ function renderSet() {
     `<label class="line">你是表上第 <input type="number" id="grow" min="1" max="40" value="${+st.row || ""}"> 個人（表頭下面從上往下數）</label>` +
     `<label class="line">名字（選填，幫 Gemini 找那一列）<input id="gname" value="${esc(st.name || "")}" maxlength="20"></label>` +
     `<button class="primary" data-act="savegem">存起來</button></div>`;
+  h += remindCard();
 
   h += `<div class="card"><h3>🕐 班別時間表</h3><p class="muted">上班時間 → 下班時間。下班空白＝看情況（先算下面的小時數）；下班比上班早＝隔天下班。夜班固定 23:00。</p><div id="tbl">`;
   for (const [a, b] of Object.entries(tb).sort()) h += tRow(a, b);
@@ -526,7 +529,134 @@ document.addEventListener("click", async ev => {
     if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "再按一次就清除（先複製備份！）"; return; }
     localStorage.removeItem(KEY); DB = load(); render(); return toast("清除了");
   }
+  if (b.dataset.ev) return openEvent(DB.events.find(e => e.id === b.dataset.ev));
+  if (act === "evnew") return openEvent({date: b.dataset.date || today(), kind: "回診"});
+  if (act === "evsave") return saveEvent();
+  if (act === "evdel") {
+    if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "再按一次就刪掉"; return; }
+    DB.events = DB.events.filter(e => e.id !== EV.id); save(); closeSheet(); render(); return toast("刪掉了");
+  }
+  if (act === "evparse" || act === "evphoto") {
+    if (!DB.settings.gkey) return toast("先到「⚙️ 設定」填 Gemini 金鑰", 4000);
+    if (act === "evphoto") return $("#efile").click();
+    const t = $("#ev-say").value.trim();
+    if (!t) return toast("先打一句話");
+    return gemEvent(() => Roster.parseEvent(DB.settings.gkey, t));
+  }
+  if (b.dataset.pick !== undefined) return openEvent(Object.assign({}, EV, PICKS[+b.dataset.pick], {id: EV.id}));
+  if (act === "savermd") {
+    DB.settings.push_shift = $("#r-shift").checked;
+    DB.settings.push_event = $("#r-event").checked;
+    DB.settings.eve_hour = Math.max(0, Math.min(23, parseInt($("#r-eve").value, 10) || 20));
+    DB.settings.before_hours = Math.max(0.5, Math.min(12, +$("#r-before").value || 2));
+    save(); render(); return toast("提醒設定存好了");
+  }
+  if (act === "rmdtest") { window.CalBridge.testAlarm(); return toast("10 秒後會跳一則測試提醒"); }
+  if (act === "rmdperm") { window.CalBridge.askNotify(); return; }
 });
+
+// ════════════ 回診／行程 ════════════
+let EV = null, PICKS = [];
+function openEvent(e) {
+  if (!e) return;
+  EV = Object.assign({id: "", date: today(), time: "", kind: "回診", place: "", dept: "", bring: "", title: "", note: ""}, e);
+  const f = (k, label, ph = "") => `<label class="fl">${label}<input id="ev-${k}" value="${esc(EV[k])}" placeholder="${esc(ph)}"></label>`;
+  let h = `<div class="sh-head"><b>${EV.id ? "改" : "加"}回診／行程</b><button class="x" data-close>✕</button></div>`;
+  if (!EV.id) h += `<div class="quick"><textarea id="ev-say" rows="2" placeholder="打一句話，例如：12/3 下午兩點 台大眼科回診，帶健保卡"></textarea>` +
+    `<div class="btns"><button data-act="evparse">✨ 幫我拆</button><button data-act="evphoto">📷 拍預約單</button></div><div id="ev-res"></div></div>`;
+  h += `<div class="fgrid"><label class="fl">日期<input type="date" id="ev-date" value="${esc(EV.date)}"></label>` +
+    `<label class="fl">時間<input type="time" id="ev-time" value="${esc(EV.time)}"></label>` +
+    `<label class="fl">種類<select id="ev-kind"><option${EV.kind === "回診" ? " selected" : ""}>回診</option><option${EV.kind === "行程" ? " selected" : ""}>行程</option></select></label></div>` +
+    f("title", "標題", "例如：台大眼科回診") + f("place", "地點", "醫院／診所") + f("dept", "科別／醫師") + f("bring", "要帶", "健保卡、預約單…") + f("note", "備註") +
+    `<div class="btns"><button class="primary" data-act="evsave">存起來</button>${EV.id ? `<button class="danger" data-act="evdel">刪掉</button>` : ""}<button data-close>取消</button></div>`;
+  openSheet(h);
+}
+async function gemEvent(fn) {
+  const box = $("#ev-res");
+  box.innerHTML = `<p class="muted">Gemini 讀取中…</p>`;
+  try {
+    PICKS = (await fn()).filter(i => i && i.date);
+    if (!PICKS.length) { box.innerHTML = `<p class="muted">找不到日期，請自己填下面的欄位。</p>`; return; }
+    if (PICKS.length === 1) { openEvent(Object.assign({}, EV, cleanEv(PICKS[0]), {id: ""})); return toast("拆好了，看一下對不對再存"); }
+    PICKS = PICKS.map(cleanEv);
+    box.innerHTML = `<p class="muted">讀到 ${PICKS.length} 筆，點一筆填進下面（存完再點「＋」加下一筆）：</p>` +
+      PICKS.map((p, i) => `<button class="row" data-pick="${i}">${esc(md(p.date))} ${esc(p.time)} ${esc(p.title || p.place || p.kind)}</button>`).join("");
+  } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+}
+function cleanEv(i) {
+  return {date: /^\d{4}-\d{2}-\d{2}$/.test(i.date || "") ? i.date : "", time: normTime(i.time), kind: i.kind === "行程" ? "行程" : "回診",
+    place: String(i.place || "").slice(0, 40), dept: String(i.dept || "").slice(0, 30), bring: String(i.bring || "").slice(0, 80),
+    title: String(i.title || "").slice(0, 40), note: String(i.note || "").slice(0, 200)};
+}
+function saveEvent() {
+  const v = k => $("#ev-" + k).value.trim();
+  const e = cleanEv({date: v("date"), time: v("time"), kind: v("kind"), place: v("place"), dept: v("dept"), bring: v("bring"), title: v("title"), note: v("note")});
+  if (!e.date) return toast("要填日期");
+  if (!e.title) e.title = (e.place + e.dept + (e.kind === "回診" ? "回診" : "")) || e.kind;
+  e.id = EV.id || Math.random().toString(16).slice(2, 12);
+  DB.events = DB.events.filter(x => x.id !== e.id).concat(e).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  save(); closeSheet(); render();
+  toast(`${md(e.date)} ${e.title} 存好了`);
+}
+document.addEventListener("change", ev => {
+  if (ev.target.id !== "efile") return;
+  const f = ev.target.files[0];
+  ev.target.value = "";
+  if (f) gemEvent(() => Roster.readAppt(DB.settings.gkey, f));
+});
+
+// ════════════ 提醒（手機鬧鐘式：交給安卓 App 用 AlarmManager 排，不靠網路推播） ════════════
+// 規則照電腦版 calapi.due_pushes：早／中／晚班前一天 eve_hour 點、夜班當天 eve_hour 點；回診前一天 eve_hour 點＋當天 before_hours 小時前
+function reminders() {
+  const s = DB.settings, out = [], now = Date.now(), until = now + 35 * 86400000;
+  const at = (ds, hm) => { const [h, m] = hm.split(":").map(Number); const d = parse(ds); d.setHours(h, m, 0, 0); return d.getTime(); };
+  const eve = `${pad(+s.eve_hour || 20)}:00`;
+  const off = (t, nxt) => {
+    const [end, how] = shiftEnd(t.kind, t.time);
+    if (how === "vague") return "下班看情況";
+    return `${end < (t.time || "00:00") ? nxt : ""}${end} 下班` + (how === "guess" ? "（約）" : "");
+  };
+  const add = (key, when, title, body) => { if (when > now && when < until) out.push({key, at: when, title, body}); };
+  if (s.push_shift !== false) {
+    for (const [ds, t] of Object.entries(DB.shifts)) {
+      const ot = t.ot ? "（國定加班）" : "";
+      if (["早", "中", "晚"].includes(t.kind)) add(`shift:${ds}`, at(addDays(ds, -1), eve), "📅 明天上班", `明天 ${t.time} ${NAME[t.kind]}${ot}，${off(t, "隔天 ")}`);
+      if (t.kind === "夜") { const tt = Object.assign({}, t, {time: t.time || "23:00"}); add(`shift:${ds}`, at(ds, eve), "📅 今晚上班", `今晚 ${tt.time} 夜班${ot}，${off(tt, "明早 ")}`); }
+    }
+  }
+  if (s.push_event !== false) {
+    for (const e of DB.events) {
+      const what = e.title + (e.place && !e.title.includes(e.place) ? `（${e.place}）` : ""), bring = e.bring ? `，帶 ${e.bring}` : "";
+      const word = e.kind === "回診" ? "回診" : "的行程";
+      add(`ev1:${e.id}:${e.date}`, at(addDays(e.date, -1), eve), "🏥 明天" + word, `明天 ${e.time ? e.time + " " : ""}${what}${bring}`);
+      if (e.time) {
+        const hb = +s.before_hours || 2, lt = hb >= 1 ? `${Math.floor(hb)} 小時${hb % 1 ? ` ${Math.round(hb % 1 * 60)} 分` : ""}後` : `${Math.round(hb * 60)} 分後`;
+        add(`ev0:${e.id}:${e.date}:${e.time}`, at(e.date, e.time) - hb * 3600000, "🏥 準備出門", `今天 ${e.time} ${what}（${lt}）${bring}`);
+      }
+    }
+  }
+  return out.sort((a, b) => a.at - b.at).slice(0, 60);
+}
+function syncAlarms() {   // 每次資料改了或打開 App：把接下來 35 天的提醒整批交給 App 重排
+  if (window.CalBridge && CalBridge.setAlarms) {
+    try { CalBridge.setAlarms(JSON.stringify(reminders())); } catch (e) { /* 舊版 App 沒有這個功能 */ }
+  }
+}
+function remindCard() {
+  const s = DB.settings, list = reminders(), app = !!(window.CalBridge && CalBridge.setAlarms);
+  const st = app && CalBridge.alarmStatus ? JSON.parse(CalBridge.alarmStatus()) : null;
+  let h = `<div class="card"><h3>🔔 提醒</h3>`;
+  if (!app) h += `<p class="muted">提醒要在 Fold8 的「行事曆手機版」App 裡才會跳（瀏覽器打開不會）。</p>`;
+  else if (st && !st.notify) h += `<p class="warn">通知被關掉了，提醒不會跳。<button class="small" data-act="rmdperm">打開通知</button></p>`;
+  h += `<label class="ck"><input type="checkbox" id="r-shift"${s.push_shift !== false ? " checked" : ""}> 上班提醒（早中晚班前一天晚上、夜班當天晚上）</label>` +
+    `<label class="ck"><input type="checkbox" id="r-event"${s.push_event !== false ? " checked" : ""}> 回診／行程提醒（前一天晚上＋當天出門前）</label>` +
+    `<label class="line">晚上幾點提醒 <input type="number" id="r-eve" min="0" max="23" value="${+s.eve_hour || 20}"> 點</label>` +
+    `<label class="line">回診當天提早 <input type="number" id="r-before" min="0.5" max="12" step="0.5" value="${+s.before_hours || 2}"> 小時提醒</label>` +
+    `<div class="btns"><button class="primary" data-act="savermd">存起來</button>${app ? `<button data-act="rmdtest">測試（10 秒後跳）</button>` : ""}</div>` +
+    `<p class="muted">接下來 35 天會跳 ${list.length} 則` + (list[0] ? `，下一則：${esc(md(iso(new Date(list[0].at))))} ${new Date(list[0].at).toTimeString().slice(0, 5)}「${esc(list[0].body)}」` : "") + `。</p>`;
+  if (st && !st.exact) h += `<p class="muted">（手機沒給「精確鬧鐘」權限，提醒可能晚幾分鐘）</p>`;
+  return h + `</div>`;
+}
 
 function render() {
   document.body.classList.toggle("wide", wide.matches);
@@ -534,6 +664,8 @@ function render() {
   if (tab === "today" || both) renderToday();
   if (tab === "month" || both) renderMonth();
   if (tab === "set") renderSet();
+  clearTimeout(render._t);
+  render._t = setTimeout(syncAlarms, 300);
 }
 wide.addEventListener("change", render);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { DB = load(); render(); } });   // 過了午夜切回來，今天要換

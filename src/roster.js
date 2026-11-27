@@ -274,5 +274,31 @@ ${MARKS}
     return Object.assign(data, {_how: how, _grid: Math.round(score * 100) / 100, _angle: angle, _model: model,
       _sec: Math.round((Date.now() - t0) / 100) / 10, photo: th.toDataURL("image/jpeg", 0.75)});
   }
-  return {read, _test: {prep, deskew, lines, gray, mosaic, comb}};
+  // ── 回診：打一句話拆欄位、拍預約單（照 gem.py 的 parse_event／read_appt）──
+  const TEXT = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"];
+  const EVENT_SCHEMA = {type: "OBJECT", properties: {items: {type: "ARRAY", items: {type: "OBJECT", properties: {
+    date: {type: "STRING", description: "YYYY-MM-DD"}, time: {type: "STRING", description: "HH:MM(24 小時制),沒說就空白"},
+    kind: {type: "STRING", description: "回診 或 行程"}, place: {type: "STRING", description: "醫院/診所/地點,沒有就空白"},
+    dept: {type: "STRING", description: "科別(眼科、牙科…)或醫師,沒有就空白"}, bring: {type: "STRING", description: "要帶的東西,沒有就空白"},
+    title: {type: "STRING", description: "短標題,例如「台大眼科回診」"}, note: {type: "STRING", description: "其他備註,沒有就空白"},
+    sure: {type: "NUMBER", description: "0~1"}}, required: ["date", "time", "kind", "place", "dept", "bring", "title", "note", "sure"]}}},
+    required: ["items"]};
+  const todayTxt = () => { const d = new Date(), p = n => String(n).padStart(2, "0");
+    return `今天是 ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}(星期${"日一二三四五六"[d.getDay()]})。`; };
+  async function parseEvent(key, text) {
+    const p = todayTxt() + "\n使用者用口語記一個行程(通常是看醫生回診),請拆成欄位。" +
+      "日期沒寫年就取今天以後最近的那一天;「下週三」「後天」照今天推算。「下午兩點」=14:00,「早上九點半」=09:30。" +
+      "沒提到的欄位留空白,不要自己編。一句話裡有好幾個行程就回好幾筆。\n\n使用者說:" + text.trim().slice(0, 500);
+    const [d] = await call(key, TEXT, [{text: p}], EVENT_SCHEMA);
+    return d.items || [];
+  }
+  async function readAppt(key, file) {
+    const p = todayTxt() + "\n這是一張醫院的預約單、掛號單或藥袋照片。請找出「下次回診/預約看診」的日期和時間" +
+      "(民國年請換成西元,例如 115 年=2026 年;只寫時段如「上午診」就填 09:00、「下午診」14:00、「夜診」18:00,並在 note 寫原本的字)," +
+      "醫院名稱、科別(或醫師)、要帶的東西(單子上有寫才填)。找不到回診日期就回空的 items。不要回病人姓名、病歷號、藥名。";
+    const img = await prep(file);
+    const [d] = await call(key, VISION, [part(img), {text: p}], EVENT_SCHEMA);
+    return d.items || [];
+  }
+  return {read, parseEvent, readAppt, _test: {prep, deskew, lines, gray, mosaic, comb}};
 })();
