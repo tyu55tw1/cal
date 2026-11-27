@@ -139,3 +139,21 @@ button.ev { display: block; width: 100%; text-align: left; border: 0; border-lef
   .tabs { justify-content: center; }
   .tabs button { flex: 0 1 220px; }
 }
+
+/* 1.5 月曆照電腦版：班別色塊（顏色照電腦版 app.css）＋下面一行時間、前後月淡淡的 */
+.msub { color: var(--muted); font-size: 14px; margin: 0 2px 6px; }
+.cell { align-items: stretch; text-align: left; }
+.cell .n { align-self: flex-start; padding: 0 3px; font-weight: 600; }
+.cell.out { opacity: .35; }
+.mk { display: block; font-size: 13px; font-weight: 700; border-radius: 6px; padding: 1px 4px; color: #fff; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk.k-早 { background: #d98a00; } .mk.k-中 { background: #1b8a5e; } .mk.k-晚 { background: #7b48bd; } .mk.k-夜 { background: #24407a; }
+.mk.k-休 { background: #7d879a; } .mk.k-特休 { background: #d4486c; } .mk.k-例 { background: #4f5868; } .mk.k-國定 { background: #0d8796; }
+.cell .tm { font-size: 13px; font-weight: 700; line-height: 1.1; padding-left: 2px; color: var(--ink, inherit); font-variant-numeric: tabular-nums; }
+.mlegend { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; color: var(--muted); margin: 10px 2px 0; }
+.mlegend i.mk { display: inline-block; width: 10px; height: 10px; padding: 0; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+@media (prefers-color-scheme: dark) {
+  .mk { color: #111; }
+  .mk.k-早 { background: #ffb938; } .mk.k-中 { background: #4fd19c; } .mk.k-晚 { background: #b98cf0; } .mk.k-夜 { background: #8fb0ff; }
+  .mk.k-休 { background: #9aa5b8; } .mk.k-特休 { background: #ff8fab; } .mk.k-例 { background: #c3cbd8; } .mk.k-國定 { background: #5fd3e0; }
+}

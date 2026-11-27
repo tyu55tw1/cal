@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.4";
+const VERSION = "手機版 1.5";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -225,19 +225,33 @@ function renderToday() {
 
 // ════════════ 月曆 ════════════
 function renderMonth() {
-  const [y, m] = month, first = new Date(y, m - 1, 1), days = new Date(y, m, 0).getDate(), d0 = today();
-  let h = `<div class="card"><div class="mhead"><button class="nav" data-mv="-1" aria-label="上個月">‹</button>` +
+  // 1.5（2026-11-27 使用者拿線上版比）：照電腦版——上面特休／本月上班天數、班別色塊＋下面一行完整上班時間（夜班 23:00）、
+  // 前後月的日子淡淡顯示、下面顏色說明
+  const [y, m] = month, first = new Date(y, m - 1, 1), last = new Date(y, m, 0), d0 = today();
+  const yr = String(y), ym = `${y}-${pad(m)}-`;
+  const pto = Object.entries(DB.shifts).filter(([d, x]) => d.startsWith(yr) && x.kind === "特休").length;
+  const mine = Object.entries(DB.shifts).filter(([d]) => d.startsWith(ym)).map(([, x]) => x);
+  const work = mine.filter(x => x.kind in DEFAULT_TIME).length, ot = mine.filter(x => x.ot).length;
+  let h = `<div class="card"><div class="msub">${yr} 年特休用了 ${pto} 天${work ? `・本月上班 ${work} 天` : ""}${ot ? `（國定加班 ${ot}）` : ""}</div>` +
+    `<div class="mhead"><button class="nav" data-mv="-1" aria-label="上個月">‹</button>` +
     `<b>${y} 年 ${m} 月</b><button class="nav" data-mv="1" aria-label="下個月">›</button>` +
     `<button class="small" data-mv="0">今天</button></div><div class="grid">`;
   for (const w of WEEK) h += `<div class="wd">${w}</div>`;
-  for (let i = 0; i < first.getDay(); i++) h += `<div class="cell empty"></div>`;
-  for (let d = 1; d <= days; d++) {
-    const ds = `${y}-${pad(m)}-${pad(d)}`, s = DB.shifts[ds], wd = new Date(y, m - 1, d).getDay();
-    const cls = ["cell", ds === d0 ? "is-today" : "", wd === 0 || wd === 6 ? "we" : "", s && s.kind ? "k-" + s.kind : "", guessFlag(s) ? "flag" : ""];
-    h += `<button class="${cls.filter(Boolean).join(" ")}" data-day="${ds}"><span class="n">${d}</span>` +
-      `<span class="s">${esc(short(s))}</span>${eventsOn(ds).length ? `<span class="e">🏥</span>` : ""}</button>`;
+  const g = new Date(first); g.setDate(1 - first.getDay());
+  for (; g <= last || g.getDay() !== 0; g.setDate(g.getDate() + 1)) {
+    const ds = iso(g), s = DB.shifts[ds], wd = g.getDay(), out = g.getMonth() !== m - 1;
+    const cls = ["cell", out ? "out" : "", ds === d0 ? "is-today" : "", wd === 0 || wd === 6 ? "we" : "", guessFlag(s) ? "flag" : ""];
+    let inner = "";
+    if (s && s.kind) {
+      inner += `<span class="mk k-${esc(s.kind)}">${esc(s.kind)}${s.ot ? "✓" : ""}</span>`;
+      if (s.kind in DEFAULT_TIME) inner += `<span class="tm">${esc(s.time || DEFAULT_TIME[s.kind])}</span>`;
+    }
+    h += `<button class="${cls.filter(Boolean).join(" ")}" data-day="${ds}"><span class="n">${g.getDate()}</span>${inner}` +
+      `${eventsOn(ds).length ? `<span class="e">🏥</span>` : ""}</button>`;
   }
-  h += `</div><div class="legend">點一天可以看詳細、改班。黃底＝班別時間表沒有這個上班時間（下班先算 8 小時）。</div></div>`;
+  h += `</div><div class="mlegend">${Object.keys(NAME).map(k => `<span><i class="mk k-${esc(k)}"></i>${NAME[k]}</span>`).join("")}` +
+    `<span>夜✓＝國定加班</span><span>🏥 回診／行程</span></div>` +
+    `<div class="legend">點一天可以看詳細、改班。黃底＝班別時間表沒有這個上班時間（下班先算 8 小時）。</div></div>`;
   $("#pane-month").innerHTML = h;
 }
 
