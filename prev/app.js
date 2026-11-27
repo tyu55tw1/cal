@@ -1,0 +1,384 @@
+"use strict";
+// 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
+// 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
+// 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
+const VERSION = "手機版 1.0";
+const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
+const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
+const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
+const NAME = {"早": "早班", "中": "中班", "晚": "晚班", "夜": "夜班", "例": "例假", "休": "休假", "國定": "國定假日", "特休": "特休"};
+// 班別時間表：上班 → 下班；"" ＝看情況下班（先算 shift_hours 小時）；下班比上班早＝跨到隔天
+const DEFAULT_TABLE = {"05:00": "13:00", "06:00": "", "09:00": "17:00", "10:00": "18:00", "10:30": "18:30", "23:00": "08:00"};
+const WEEK = "日一二三四五六";
+const IS_BETA = location.pathname.includes("/beta/");
+
+// ════════════ 資料（只在手機） ════════════
+function fix(d) {
+  d = d && typeof d === "object" ? d : {};
+  d.settings = Object.assign({table: {...DEFAULT_TABLE}, shift_hours: 8, before_hours: 2, eve_hour: 20, row: 0, name: ""},
+                             d.settings || {});
+  d.shifts = d.shifts && typeof d.shifts === "object" && !Array.isArray(d.shifts) ? d.shifts : {};
+  d.events = Array.isArray(d.events) ? d.events : [];
+  return d;
+}
+function load() {
+  try { return fix(JSON.parse(localStorage.getItem(KEY) || "null")); } catch (e) { return fix({}); }
+}
+let DB = load();
+function save() {
+  localStorage.setItem(KEY, JSON.stringify(DB));
+}
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+// ════════════ 日期、時間 ════════════
+const pad = n => String(n).padStart(2, "0");
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parse = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return iso(d); };
+const today = () => iso(new Date());
+const stamp = () => { const d = new Date(); return `${iso(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const md = s => { const d = parse(s); return `${d.getMonth() + 1}/${d.getDate()}（${WEEK[d.getDay()]}）`; };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+function normTime(t) {
+  t = String(t || "").trim().replace("：", ":").replace(".", ":");
+  let m = t.match(/(\d{1,2})\s*:?\s*(\d{2})/);
+  if (!m) {
+    const m2 = t.match(/^(\d{1,2})$/);
+    return m2 && +m2[1] < 24 ? `${pad(+m2[1])}:00` : "";
+  }
+  const h = +m[1], mi = +m[2];
+  return h < 24 && mi < 60 ? `${pad(h)}:${pad(mi)}` : "";
+}
+function tableOf(t) {
+  const out = {};
+  for (const [k0, v0] of Object.entries(t || {})) {
+    const k = normTime(k0), v = v0 ? normTime(v0) : "";
+    if (k) out[k] = v;
+  }
+  return Object.keys(out).length ? out : {...DEFAULT_TABLE};
+}
+function addHours(t, h) {
+  const [a, b] = t.split(":").map(Number);
+  const m = ((a * 60 + b + Math.round(h * 60)) % 1440 + 1440) % 1440;
+  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+}
+/** [下班 HH:MM, 狀態]：ok＝對照表有／vague＝看情況下班（先算 hours）／guess＝對照表沒有（上班＋8 小時） */
+function shiftEnd(kind, t) {
+  const table = tableOf(DB.settings.table);
+  t = t || DEFAULT_TIME[kind] || "";
+  if (!t) return ["", "guess"];
+  if (table[t]) return [table[t], "ok"];
+  if (t in table) return [addHours(t, +DB.settings.shift_hours || 8), "vague"];
+  return [addHours(t, 8), "guess"];
+}
+/** 05:00 早班～13:00、06:00 早班（下班看情況）、23:00 夜班～隔天 08:00 */
+function title(s) {
+  if (!s || !s.kind) return "";
+  if (!(s.kind in DEFAULT_TIME)) return NAME[s.kind] || s.kind;
+  const t = s.time || DEFAULT_TIME[s.kind];
+  const [end, how] = shiftEnd(s.kind, t);
+  const tail = how === "vague" ? "（下班看情況）" : (end < t ? "～隔天 " : "～") + end;
+  return `${t} ${NAME[s.kind]}${tail}` + (s.ot ? "（國定加班）" : "");
+}
+/** 月曆格子裡的短字 */
+function short(s) {
+  if (!s || !s.kind) return "";
+  if (!(s.kind in DEFAULT_TIME)) return s.kind === "國定" ? "國定" : s.kind;
+  const t = s.kind === "夜" ? "" : (s.time || DEFAULT_TIME[s.kind]).replace(/^0/, "").replace(":00", "");
+  return s.kind + (t ? " " + t : "") + (s.ot ? "✓" : "");
+}
+function guessFlag(s) {   // 班別時間表沒有這個上班時間 → 標黃
+  return s && s.kind in DEFAULT_TIME && shiftEnd(s.kind, s.time)[1] === "guess";
+}
+const eventsOn = d => DB.events.filter(e => e.date === d).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+
+// ════════════ 畫面共用 ════════════
+const $ = s => document.querySelector(s);
+let tab = "today", month = (() => { const d = new Date(); return [d.getFullYear(), d.getMonth() + 1]; })();
+const wide = matchMedia("(min-width: 720px)");
+
+function toast(msg, ms = 2600) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.hidden = true; }, ms);
+}
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  document.body.dataset.tab = t;
+  render();
+  scrollTo(0, 0);
+}
+function openSheet(html) {
+  $("#sheet-box").innerHTML = html;
+  $("#sheet").hidden = false;
+}
+function closeSheet() {
+  $("#sheet").hidden = true;
+  $("#sheet-box").innerHTML = "";
+}
+// 安卓外殼按返回鍵時先問這裡：關掉抽屜、回到今天；回 false 才離開 App
+window.UI = {back() {
+  if (!$("#sheet").hidden) { closeSheet(); return true; }
+  if (tab !== "today" && !(wide.matches && tab === "month")) { setTab("today"); return true; }
+  return false;
+}};
+
+function eventHtml(e, withDate) {
+  const bits = [e.dept, e.place && "📍 " + e.place, e.bring && "帶：" + e.bring, e.note].filter(Boolean);
+  return `<div class="ev"><div class="ev-h">🏥 ${withDate ? esc(md(e.date)) + " " : ""}${esc(e.time || "")} ${esc(e.title || e.kind || "回診")}</div>` +
+    (bits.length ? `<div class="ev-d">${bits.map(esc).join("<br>")}</div>` : "") + "</div>";
+}
+function chip(s) {
+  if (!s || !s.kind) return `<span class="chip k-none">未排</span>`;
+  return `<span class="chip k-${esc(s.kind)}${guessFlag(s) ? " flag" : ""}">${esc(title(s))}</span>`;
+}
+
+// ════════════ 今天 ════════════
+function renderToday() {
+  const d0 = today(), s = DB.shifts[d0], y = DB.shifts[addDays(d0, -1)];
+  const has = Object.keys(DB.shifts).length || DB.events.length;
+  let h = "";
+  if (!has) {
+    h += `<div class="card hint"><b>手機裡還沒有班表</b><br>到「⚙️ 設定」按「📥 從電腦版搬過來」，或在月曆點一天自己填。</div>`;
+  }
+  h += `<div class="card today"><div class="day">${esc(md(d0))} 今天</div><div class="big">${chip(s)}</div>`;
+  if (y && y.kind === "夜") h += `<div class="sub">昨晚夜班，今天 ${esc(shiftEnd("夜", y.time)[0])} 下班</div>`;
+  for (const e of eventsOn(d0)) h += eventHtml(e);
+  h += `</div>`;
+  const t1 = addDays(d0, 1);
+  h += `<div class="card"><div class="day">${esc(md(t1))} 明天</div><div class="big">${chip(DB.shifts[t1])}</div>`;
+  for (const e of eventsOn(t1)) h += eventHtml(e);
+  h += `</div><div class="card"><h3>接下來</h3><div class="list">`;
+  for (let i = 2; i <= 8; i++) {
+    const d = addDays(d0, i);
+    h += `<button class="row" data-day="${d}"><span class="d">${esc(md(d))}</span>${chip(DB.shifts[d])}` +
+      (eventsOn(d).length ? `<span class="dot">🏥</span>` : "") + `</button>`;
+  }
+  h += `</div></div>`;
+  const next = DB.events.filter(e => e.date >= addDays(d0, 2)).sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || ""))).slice(0, 4);
+  if (next.length) h += `<div class="card"><h3>之後的回診</h3>${next.map(e => eventHtml(e, true)).join("")}</div>`;
+  $("#pane-today").innerHTML = h;
+}
+
+// ════════════ 月曆 ════════════
+function renderMonth() {
+  const [y, m] = month, first = new Date(y, m - 1, 1), days = new Date(y, m, 0).getDate(), d0 = today();
+  let h = `<div class="card"><div class="mhead"><button class="nav" data-mv="-1" aria-label="上個月">‹</button>` +
+    `<b>${y} 年 ${m} 月</b><button class="nav" data-mv="1" aria-label="下個月">›</button>` +
+    `<button class="small" data-mv="0">今天</button></div><div class="grid">`;
+  for (const w of WEEK) h += `<div class="wd">${w}</div>`;
+  for (let i = 0; i < first.getDay(); i++) h += `<div class="cell empty"></div>`;
+  for (let d = 1; d <= days; d++) {
+    const ds = `${y}-${pad(m)}-${pad(d)}`, s = DB.shifts[ds], wd = new Date(y, m - 1, d).getDay();
+    const cls = ["cell", ds === d0 ? "is-today" : "", wd === 0 || wd === 6 ? "we" : "", s && s.kind ? "k-" + s.kind : "", guessFlag(s) ? "flag" : ""];
+    h += `<button class="${cls.filter(Boolean).join(" ")}" data-day="${ds}"><span class="n">${d}</span>` +
+      `<span class="s">${esc(short(s))}</span>${eventsOn(ds).length ? `<span class="e">🏥</span>` : ""}</button>`;
+  }
+  h += `</div><div class="legend">點一天可以看詳細、改班。黃底＝班別時間表沒有這個上班時間（下班先算 8 小時）。</div></div>`;
+  $("#pane-month").innerHTML = h;
+}
+
+function openDay(ds) {
+  const s = DB.shifts[ds] || {}, isShift = s.kind in DEFAULT_TIME;
+  let h = `<div class="sh-head"><b>${esc(md(ds))}</b><button class="x" data-close>✕</button></div>` +
+    `<div class="big">${chip(DB.shifts[ds])}</div><div class="kinds">`;
+  for (const k of KINDS) h += `<button class="kb k-${k}${s.kind === k ? " on" : ""}" data-kind="${k}">${NAME[k]}</button>`;
+  h += `<button class="kb${s.kind ? "" : " on"}" data-kind="">不排</button></div>` +
+    `<div class="edit" ${isShift ? "" : "hidden"} id="ed-shift"><label>上班時間 <input type="time" id="ed-time" value="${esc(s.time || DEFAULT_TIME[s.kind] || "")}"></label>` +
+    `<label class="ck"><input type="checkbox" id="ed-ot" ${s.ot ? "checked" : ""}> 國定加班</label></div>` +
+    `<button class="primary" data-saveday="${ds}">存起來</button>`;
+  const evs = eventsOn(ds);
+  if (evs.length) h += `<h3>這天的回診</h3>${evs.map(e => eventHtml(e)).join("")}`;
+  h += `<div class="muted small-t">回診的新增和修改在下一版加上；現在先從電腦版搬過來。</div>`;
+  openSheet(h);
+  openDay.kind = s.kind || "";
+}
+
+function saveDay(ds) {
+  const k = openDay.kind;
+  if (!k) delete DB.shifts[ds];
+  else {
+    const rec = {kind: k, time: "", ot: false, at: stamp()};
+    if (k in DEFAULT_TIME) {
+      rec.time = k === "夜" ? "23:00" : (normTime($("#ed-time").value) || DEFAULT_TIME[k]);
+      rec.ot = $("#ed-ot").checked;
+    }
+    DB.shifts[ds] = rec;
+  }
+  save();
+  closeSheet();
+  render();
+  toast(`${md(ds)} 存好了`);
+}
+
+// ════════════ 設定 ════════════
+function renderSet() {
+  const st = DB.settings, tb = tableOf(st.table);
+  const nShift = Object.keys(DB.shifts).length, nEv = DB.events.length;
+  let h = `<div class="card"><h3>📥 從電腦版搬過來</h3>`;
+  if (window.CalBridge) {
+    h += `<p class="muted">手機要開 Tailscale、電腦要開著。會把電腦版的班表、回診、班別時間表複製到手機（電腦版不會動）。</p>` +
+      `<button class="primary" data-act="import">📥 從電腦版搬過來</button>`;
+  } else {
+    h += `<p class="muted">在 Fold8 的「行事曆手機版」App 裡才能直接搬。用瀏覽器打開時，可以用下面的「匯入備份」。</p>`;
+  }
+  h += `<p class="muted">手機裡現在有 <b>${nShift}</b> 天班、<b>${nEv}</b> 筆回診` +
+    (DB.imported ? `（${esc(DB.imported)} 從電腦版搬過）` : "") + `。</p></div>`;
+
+  h += `<div class="card"><h3>🕐 班別時間表</h3><p class="muted">上班時間 → 下班時間。下班空白＝看情況（先算下面的小時數）；下班比上班早＝隔天下班。夜班固定 23:00。</p><div id="tbl">`;
+  for (const [a, b] of Object.entries(tb).sort()) h += tRow(a, b);
+  h += `</div><button class="small" data-act="addrow">＋ 加一列</button>` +
+    `<label class="line">看情況下班的，先算 <input type="number" id="hours" min="1" max="16" step="0.5" value="${esc(st.shift_hours)}"> 小時</label>` +
+    `<div class="btns"><button class="primary" data-act="savetbl">存起來</button><button data-act="deftbl">回到預設</button></div></div>`;
+
+  h += `<div class="card"><h3>💾 備份</h3><p class="muted">資料只存在這支手機。換手機或清除 App 資料前，先複製備份（存到記事本或傳給自己）。</p>` +
+    `<div class="btns"><button data-act="export">📤 複製備份</button><button data-act="impshow">📥 匯入備份</button></div>` +
+    `<div id="impbox" hidden><textarea id="imptext" rows="4" placeholder="把備份貼在這裡"></textarea>` +
+    `<input type="file" id="impfile" accept=".json,application/json,text/plain"><button class="primary" data-act="impgo">匯入</button></div></div>`;
+
+  h += `<div class="card"><h3>ℹ️ 關於</h3><p class="muted">行事曆 ${VERSION}${IS_BETA ? "（測試版）" : ""}・程式放在網路上、打開時自動更新；` +
+    `班表、回診只存在手機，不會上傳。</p>` +
+    `<div class="btns"><a class="btn" href="${IS_BETA ? "../app/" : "../beta/"}">${IS_BETA ? "回正式版" : "打開測試版"}</a>` +
+    `<button class="danger" data-act="wipe">清除手機裡的資料</button></div></div>`;
+  $("#pane-set").innerHTML = h;
+}
+function tRow(a, b) {
+  return `<div class="trow"><input type="time" class="ta" value="${esc(a)}"> → <input type="time" class="tb" value="${esc(b)}">` +
+    `<button class="x" data-act="delrow" aria-label="刪掉這列">✕</button></div>`;
+}
+
+function readTable() {
+  const t = {};
+  for (const r of document.querySelectorAll("#tbl .trow")) {
+    const a = normTime(r.querySelector(".ta").value), b = normTime(r.querySelector(".tb").value);
+    if (a) t[a] = b;
+  }
+  return t;
+}
+
+// 從電腦版搬：安卓外殼（CalBridge）在背景拿 電腦版 /api/all，拿到後呼叫 window.onImport(文字, 錯誤)
+window.onImport = function (text, err) {
+  if (err) { toast("搬不過來：" + err, 5000); return; }
+  try {
+    const n = mergeIn(JSON.parse(text), true);
+    toast(`搬好了：${n[0]} 天班、${n[1]} 筆回診`, 4000);
+  } catch (e) {
+    toast("搬不過來：" + e.message, 5000);
+  }
+};
+/** 合進手機的資料：電腦版 /api/all 的 {ok,data:{settings,shifts,events}} 或備份檔 {settings,shifts,events} */
+function mergeIn(o, fromPc) {
+  if (o && o.ok === false) throw new Error(o.error || "電腦版回錯誤");
+  const d = o && o.data && o.data.shifts ? o.data : o;
+  if (!d || typeof d.shifts !== "object" || !Array.isArray(d.events)) throw new Error("看不懂這份資料");
+  const s = d.settings || {};
+  for (const k of ["shift_hours", "before_hours", "eve_hour", "row", "name"]) if (k in s) DB.settings[k] = s[k];
+  if (s.table) DB.settings.table = tableOf(s.table);
+  let ns = 0, ne = 0;
+  for (const [k, v] of Object.entries(d.shifts)) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && (v.kind === null || KINDS.includes(v.kind))) {
+      if (v.kind) DB.shifts[k] = {kind: v.kind, time: v.time || "", ot: !!v.ot, at: v.at || ""};
+      ns++;
+    }
+  }
+  const byId = new Map(DB.events.map(e => [e.id, e]));
+  for (const e of d.events) {
+    if (!e || !/^\d{4}-\d{2}-\d{2}$/.test(e.date || "")) continue;
+    const id = e.id || Math.random().toString(16).slice(2, 12);
+    byId.set(id, Object.assign({}, e, {id}));
+    ne++;
+  }
+  DB.events = [...byId.values()];
+  if (fromPc) DB.imported = new Date().toLocaleDateString("zh-TW");
+  save();
+  render();
+  return [ns, ne];
+}
+
+async function exportCopy() {
+  const text = JSON.stringify({app: "calphone", version: VERSION, at: new Date().toISOString(),
+                               settings: DB.settings, shifts: DB.shifts, events: DB.events});
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("備份已複製，貼到記事本或 LINE 傳給自己存著", 4000);
+  } catch (e) {   // 剪貼簿不能用：顯示出來讓人自己全選複製
+    openSheet(`<div class="sh-head"><b>備份（全選複製）</b><button class="x" data-close>✕</button></div><textarea rows="10" readonly>${esc(text)}</textarea>`);
+  }
+}
+
+// ════════════ 事件 ════════════
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("button, a, .sheet");
+  if (!b) return;
+  if (b.id === "sheet" && ev.target === b) return closeSheet();   // 點抽屜外面＝關掉
+  if (b.dataset.tab) return setTab(b.dataset.tab);
+  if (b.dataset.close !== undefined) return closeSheet();
+  if (b.dataset.day) return openDay(b.dataset.day);
+  if (b.dataset.mv !== undefined) {
+    const n = +b.dataset.mv;
+    if (n === 0) { const d = new Date(); month = [d.getFullYear(), d.getMonth() + 1]; }
+    else { const d = new Date(month[0], month[1] - 1 + n, 1); month = [d.getFullYear(), d.getMonth() + 1]; }
+    return renderMonth();
+  }
+  if (b.dataset.kind !== undefined) {
+    openDay.kind = b.dataset.kind;
+    document.querySelectorAll(".kinds .kb").forEach(x => x.classList.toggle("on", x === b));
+    const isShift = openDay.kind in DEFAULT_TIME;
+    $("#ed-shift").hidden = !isShift;
+    if (isShift) {
+      $("#ed-time").value = openDay.kind === "夜" ? "23:00" : ($("#ed-time").value || DEFAULT_TIME[openDay.kind]);
+      $("#ed-time").disabled = openDay.kind === "夜";
+    }
+    return;
+  }
+  if (b.dataset.saveday) return saveDay(b.dataset.saveday);
+  const act = b.dataset.act;
+  if (act === "import") {
+    toast("搬資料中…（要開 Tailscale）", 15000);
+    return window.CalBridge.importOld();
+  }
+  if (act === "addrow") return $("#tbl").insertAdjacentHTML("beforeend", tRow("", ""));
+  if (act === "delrow") return b.closest(".trow").remove();
+  if (act === "savetbl") {
+    const t = readTable(), hrs = Math.max(1, Math.min(16, +$("#hours").value || 8));
+    if (!Object.keys(t).length) return toast("至少要有一列");
+    DB.settings.table = t;
+    DB.settings.shift_hours = hrs;
+    save(); render();
+    return toast("班別時間表存好了");
+  }
+  if (act === "deftbl") { DB.settings.table = {...DEFAULT_TABLE}; save(); render(); return toast("回到預設了"); }
+  if (act === "export") return exportCopy();
+  if (act === "impshow") { $("#impbox").hidden = !$("#impbox").hidden; return; }
+  if (act === "impgo") {
+    let text = $("#imptext").value.trim();
+    const f = $("#impfile").files[0];
+    if (!text && f) text = await f.text();
+    if (!text) return toast("先貼上備份或選檔案");
+    try { const n = mergeIn(JSON.parse(text), false); toast(`匯入好了：${n[0]} 天班、${n[1]} 筆回診`, 4000); }
+    catch (e) { toast("匯入失敗：" + e.message, 5000); }
+    return;
+  }
+  if (act === "wipe") {   // 按兩次才清（不用 confirm 對話框）
+    if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "再按一次就清除（先複製備份！）"; return; }
+    localStorage.removeItem(KEY); DB = load(); render(); return toast("清除了");
+  }
+});
+
+function render() {
+  document.body.classList.toggle("wide", wide.matches);
+  const both = wide.matches && (tab === "today" || tab === "month");
+  if (tab === "today" || both) renderToday();
+  if (tab === "month" || both) renderMonth();
+  if (tab === "set") renderSet();
+}
+wide.addEventListener("change", render);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { DB = load(); render(); } });   // 過了午夜切回來，今天要換
+$("#beta").hidden = !IS_BETA;
+document.body.dataset.tab = tab;
+render();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

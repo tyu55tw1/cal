@@ -96,6 +96,26 @@ textarea { width: 100%; border: 1px solid var(--line); background: var(--surface
 .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); background: #222b; color: #fff; padding: 10px 16px;
   border-radius: 12px; z-index: 30; max-width: 90vw; text-align: center; backdrop-filter: blur(6px); }
 
+/* 拍班表、確認畫面 */
+.shoot { width: 100%; margin: 0 0 12px; padding: 12px; font-size: 17px; }
+button:disabled { opacity: .45; }
+.step { font-size: 18px; font-weight: 600; margin: 18px 0 6px; }
+.otbox { background: var(--flag); border: 2px solid var(--flag-line); border-radius: 12px; padding: 10px 12px; margin: 8px 0; }
+.otbox .ck { margin-top: 8px; font-weight: 700; }
+.rphoto { overflow: hidden; border-radius: 10px; border: 1px solid var(--line); margin-top: 8px; cursor: zoom-in; }
+.rphoto img { display: block; width: 100%; }
+.rphoto.zoom { overflow-x: auto; cursor: zoom-out; }
+.rphoto.zoom img { width: 1400px; max-width: none; }
+.rlist { margin: 10px 0; }
+.rrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--line); }
+.rrow.flag { background: var(--flag); border-radius: 8px; }
+.rrow .d { min-width: 88px; font-size: 15px; }
+.rrow select { border: 1px solid var(--line); background: var(--surface2); border-radius: 10px; padding: 6px 8px; font: inherit; color: inherit; }
+.rrow [hidden] { display: none !important; }
+.why { flex-basis: 100%; font-size: 13px; color: var(--muted); padding-left: 2px; }
+.why.old { color: var(--accent); }
+input[type=password], #gname { border: 1px solid var(--line); background: var(--surface2); border-radius: 10px; padding: 6px 8px; width: 100%; margin-top: 4px; }
+
 /* Fold8 打開（≥720）：左邊今天、右邊月曆；抽屜改成置中對話框 */
 @media (min-width: 720px) {
   body.wide[data-tab="today"] main, body.wide[data-tab="month"] main { display: grid; grid-template-columns: minmax(300px, 2fr) 3fr; gap: 14px; }

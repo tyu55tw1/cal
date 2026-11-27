@@ -1,7 +1,7 @@
 // 行事曆手機版的離線快取：每次打開先抓網路上的新版（改完不用重裝），抓不到就用手機裡存的那一份。
 // 只快取程式本身（同一個網址底下的檔案），班表和回診存在 localStorage，不經過這裡。
-const CACHE = "calphone-v1";
-const SHELL = ["./", "index.html", "app.js", "app.css", "manifest.json", "icons/icon-192.png"];
+const CACHE = "calphone-v2";
+const SHELL = ["./", "index.html", "app.js", "roster.js", "app.css", "manifest.json", "icons/icon-192.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

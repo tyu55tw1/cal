@@ -2,7 +2,7 @@
 // 行事曆手機版（2026-11-27 第 1 步）：月曆、今天、班別時間表、從電腦版搬資料、備份。
 // 程式放 GitHub Pages（公開），班表／回診／設定只存在手機的 localStorage，不送到任何地方。
 // 班別規則照電腦版 E:\程式相關\行事曆\shifts.py（改了兩邊一起改）。
-const VERSION = "手機版 1.0";
+const VERSION = "手機版 1.1";
 const KEY = "calphone.v1";   // 同一個網域（tyu55tw1.github.io）之後還會放公車、生活助手，名字別撞
 const KINDS = ["早", "中", "晚", "夜", "例", "休", "國定", "特休"];
 const DEFAULT_TIME = {"早": "06:00", "中": "09:00", "晚": "10:30", "夜": "23:00"};
@@ -93,6 +93,62 @@ function guessFlag(s) {   // 班別時間表沒有這個上班時間 → 標黃
 }
 const eventsOn = d => DB.events.filter(e => e.date === d).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
 
+// ════════════ 讀班表的規則（照 shifts.py 的 parse_mark／convert） ════════════
+const CHECKS = "✓✔√VvＶ", LOW = 0.7;   // 把握度低於 LOW 就標黃
+/** 格子的大字 → [班別, 國定加班]；班別 null＝不管（代、空白），認不得回 "?" */
+function parseMark(mark) {
+  const s = String(mark || "").replace(/\s/g, "");
+  if (!s) return [null, false];
+  const check = [...CHECKS].some(c => s.includes(c));
+  if (s.includes("時休") || s.includes("特休") || s.includes("特")) return ["特休", false];
+  if (s.includes("代") && ![..."早中晚夜"].some(k => s.includes(k))) return [null, false];
+  for (const k of "早中晚夜") if (s.includes(k)) return [k, check || s.includes("國定") || s.includes("加班")];
+  if (s.includes("例") || s.includes("倒")) return ["例", false];   // 手寫「例」很像「倒」
+  if (s.includes("國定")) return ["國定", false];
+  if (s.includes("休")) return ["休", false];
+  if (check && ![...s].some(c => !CHECKS.includes(c))) return ["國定", false];   // 整格只有勾
+  if (s === "時") return ["特休", false];   // 「時休」只讀到上半
+  return ["?", false];
+}
+/** Gemini 讀到的 {year, month, cells} → {year, month, start, end, days:[{date, wd, kind, time, ot, raw, flag, why}]} */
+function convert(data) {
+  const table = tableOf(DB.settings.table), y = +data.year, m = +data.month;
+  if (!(y > 2000 && y < 2100 && m >= 1 && m <= 12)) throw new Error("讀不到表頭的年月，請拍清楚一點（要拍到「YYYY年M月 輪休表」那行）");
+  const start = iso(new Date(m === 1 ? y - 1 : y, m === 1 ? 11 : m - 2, 26)), end = iso(new Date(y, m - 1, 25));
+  const got = {};
+  for (const c of data.cells || []) {
+    const d = parseInt(c.day, 10);
+    if (!d) continue;
+    const dt = d >= 26 ? new Date(+start.slice(0, 4), +start.slice(5, 7) - 1, d) : new Date(y, m - 1, d);   // 26 以後是上個月
+    if (dt.getDate() !== d) continue;   // 例如 2 月沒有 30 日
+    const k = iso(dt);
+    if (!(k in got)) got[k] = c;
+  }
+  const days = [];
+  for (let ds = start; ds <= end; ds = addDays(ds, 1)) {
+    const c = got[ds], wd = WEEK[parse(ds).getDay()];
+    const rec = {date: ds, wd, kind: null, time: "", ot: false, raw: "", flag: false, why: ""};
+    if (!c) { rec.flag = true; rec.why = "這天讀不到"; days.push(rec); continue; }
+    const t = normTime(c.time), mk = String(c.mark || "").trim(), why = [];
+    rec.raw = (t + " " + mk).trim();
+    let [k, ot] = parseMark(mk);
+    if (k === "?") { k = null; why.push(`看不懂「${mk}」`); }
+    else if (k in DEFAULT_TIME) {
+      rec.ot = ot;
+      if (k === "夜") { rec.time = "23:00"; if (t && t !== "23:00") why.push(`夜班卻寫 ${t}`); }
+      else if (t) { rec.time = t; if (!(t in table)) why.push(`${NAME[k]}寫 ${t}，班別時間表沒有，下班先算 ${addHours(t, 8)}`); }
+      else { rec.time = DEFAULT_TIME[k]; why.push(`沒讀到時間，先填 ${DEFAULT_TIME[k]}`); }
+    }
+    rec.kind = k;
+    const w = String(c.weekday || "").trim();
+    if (w && WEEK.includes(w.slice(-1)) && w.slice(-1) !== wd) why.push(`表上星期${w.slice(-1)}，日期算出來是星期${wd}`);
+    if ((+c.sure || 0) < LOW) why.push("字看不太清楚");
+    if (why.length) { rec.flag = true; rec.why = why.join("；"); }
+    days.push(rec);
+  }
+  return {year: y, month: m, start, end, days};
+}
+
 // ════════════ 畫面共用 ════════════
 const $ = s => document.querySelector(s);
 let tab = "today", month = (() => { const d = new Date(); return [d.getFullYear(), d.getMonth() + 1]; })();
@@ -145,6 +201,7 @@ function renderToday() {
   if (!has) {
     h += `<div class="card hint"><b>手機裡還沒有班表</b><br>到「⚙️ 設定」按「📥 從電腦版搬過來」，或在月曆點一天自己填。</div>`;
   }
+  h += `<button class="primary shoot" data-act="shoot">📷 拍班表</button>`;
   h += `<div class="card today"><div class="day">${esc(md(d0))} 今天</div><div class="big">${chip(s)}</div>`;
   if (y && y.kind === "夜") h += `<div class="sub">昨晚夜班，今天 ${esc(shiftEnd("夜", y.time)[0])} 下班</div>`;
   for (const e of eventsOn(d0)) h += eventHtml(e);
@@ -229,6 +286,13 @@ function renderSet() {
   h += `<p class="muted">手機裡現在有 <b>${nShift}</b> 天班、<b>${nEv}</b> 筆回診` +
     (DB.imported ? `（${esc(DB.imported)} 從電腦版搬過）` : "") + `。</p></div>`;
 
+  h += `<div class="card"><h3>📷 讀班表</h3><p class="muted">拍班表要用 Google Gemini 的免費金鑰（到 aistudio.google.com 申請）。` +
+    `金鑰只存在這支手機，不會放進備份。照片只送 Gemini 讀，不存。</p>` +
+    `<label class="line">Gemini 金鑰 <input type="password" id="gkey" autocomplete="off" value="${esc(st.gkey || "")}" placeholder="AIza…"></label>` +
+    `<label class="line">你是表上第 <input type="number" id="grow" min="1" max="40" value="${+st.row || ""}"> 個人（表頭下面從上往下數）</label>` +
+    `<label class="line">名字（選填，幫 Gemini 找那一列）<input id="gname" value="${esc(st.name || "")}" maxlength="20"></label>` +
+    `<button class="primary" data-act="savegem">存起來</button></div>`;
+
   h += `<div class="card"><h3>🕐 班別時間表</h3><p class="muted">上班時間 → 下班時間。下班空白＝看情況（先算下面的小時數）；下班比上班早＝隔天下班。夜班固定 23:00。</p><div id="tbl">`;
   for (const [a, b] of Object.entries(tb).sort()) h += tRow(a, b);
   h += `</div><button class="small" data-act="addrow">＋ 加一列</button>` +
@@ -300,8 +364,9 @@ function mergeIn(o, fromPc) {
 }
 
 async function exportCopy() {
+  const settings = Object.fromEntries(Object.entries(DB.settings).filter(([k]) => k !== "gkey"));   // 金鑰不放進備份
   const text = JSON.stringify({app: "calphone", version: VERSION, at: new Date().toISOString(),
-                               settings: DB.settings, shifts: DB.shifts, events: DB.events});
+                               settings, shifts: DB.shifts, events: DB.events});
   try {
     await navigator.clipboard.writeText(text);
     toast("備份已複製，貼到記事本或 LINE 傳給自己存著", 4000);
@@ -310,9 +375,93 @@ async function exportCopy() {
   }
 }
 
+// ════════════ 拍班表 → 確認畫面 ════════════
+let RD = null;   // 這次讀到的班表（還沒存）
+async function shoot(file) {
+  const st = DB.settings;
+  if (!st.gkey) { setTab("set"); return toast("先在「📷 讀班表」填 Gemini 金鑰", 4000); }
+  if (!(+st.row >= 1)) { setTab("set"); return toast("先填你是表上第幾個人", 4000); }
+  const d = new Date(), hint = d.getDate() >= 26 ? [d.getMonth() === 11 ? d.getFullYear() + 1 : d.getFullYear(), d.getMonth() === 11 ? 1 : d.getMonth() + 2]
+    : [d.getFullYear(), d.getMonth() + 1];   // 照片裁掉標題時用：26 號以後拍的多半是下個月的表
+  openSheet(`<div class="sh-head"><b>📷 讀班表</b></div><p id="rstep" class="step">整理照片…</p><p class="muted">大約 30～90 秒，先別關掉 App。</p>`);
+  try {
+    const raw = await Roster.read(file, {key: st.gkey, row: +st.row, name: st.name || "", hint,
+      onStep: s => { const e = $("#rstep"); if (e) e.textContent = s; }});
+    const r = convert(raw);
+    for (const x of r.days) {
+      const o = DB.shifts[x.date];
+      if (o && (o.kind !== x.kind || (o.time || "") !== (x.time || "") || !!o.ot !== x.ot)) x.old = title(o);
+    }
+    Object.assign(r, {photo: raw.photo, how: raw._how, sec: raw._sec, seen: false});
+    RD = r;
+    showRoster();
+  } catch (e) {
+    openSheet(`<div class="sh-head"><b>讀不到</b><button class="x" data-close>✕</button></div><p>${esc(e.message)}</p>` +
+      `<button class="primary" data-act="shoot">再拍一次</button>`);
+  }
+}
+function showRoster() {
+  const r = RD, ots = r.days.filter(d => d.ot), nflag = r.days.filter(d => d.flag).length;
+  let h = `<div class="sh-head"><b>${r.year} 年 ${r.month} 月班表</b><button class="x" data-close>✕</button></div>` +
+    `<p class="muted">${esc(md(r.start))}～${esc(md(r.end))}・${r.how === "tiles" ? "逐格讀" : "整條讀"}・${r.sec} 秒` +
+    (nflag ? `・<b>${nflag} 天標黃，請看一下</b>` : "") + `</p>` +
+    `<div class="otbox" id="otbox"><b>📌 有國定加班嗎？</b><br>讀到 ${ots.length} 天：${ots.map(d => esc(md(d.date))).join("、") || "沒有"}。` +
+    `班別下面的小勾最容易漏，請對照下面的照片。<label class="ck"><input type="checkbox" id="rseen" ${r.seen ? "checked" : ""}> 我看過了</label></div>`;
+  if (r.photo) h += `<div class="rphoto" data-act="zoom"><img src="${r.photo}" alt="對照照片"></div><div class="muted small-t">↑ 對照照片（點一下放大，可以左右滑）</div>`;
+  h += `<div class="rlist">`;
+  r.days.forEach((d, i) => {
+    const work = d.kind in DEFAULT_TIME;
+    h += `<div class="rrow${d.flag ? " flag" : ""}"><span class="d">${esc(md(d.date))}</span>` +
+      `<select class="rk" data-ri="${i}">${["", ...KINDS].map(k => `<option value="${k}"${(d.kind || "") === k ? " selected" : ""}>${k ? NAME[k] : "不排"}</option>`).join("")}</select>` +
+      `<input type="time" class="rt" data-ri="${i}" value="${esc(d.time)}"${work && d.kind !== "夜" ? "" : " hidden"}>` +
+      `<label class="ck ro-l"${work ? "" : " hidden"}><input type="checkbox" class="ro" data-ri="${i}"${d.ot ? " checked" : ""}>國定加班</label>` +
+      (d.why ? `<div class="why">⚠ ${esc(d.why)}${d.raw ? `（讀到「${esc(d.raw)}」）` : ""}</div>` : "") +
+      (d.old ? `<div class="why old">原本：${esc(d.old || "未排")}</div>` : "") + `</div>`;
+  });
+  h += `</div><div class="btns"><button class="primary" id="rsave" data-act="rsave"${r.seen ? "" : " disabled"}>確認存入</button>` +
+    `<button data-close>取消</button></div>`;
+  openSheet(h);
+}
+document.addEventListener("change", ev => {
+  const t = ev.target;
+  if (t.id === "rfile") { const f = t.files[0]; t.value = ""; if (f) shoot(f); return; }
+  if (!RD) return;
+  if (t.id === "rseen") { RD.seen = t.checked; $("#rsave").disabled = !t.checked; return; }
+  const i = +t.dataset.ri, d = RD.days[i];
+  if (!d) return;
+  if (t.classList.contains("rk")) {
+    d.kind = t.value || null;
+    const row = t.closest(".rrow"), work = d.kind in DEFAULT_TIME;
+    if (work) d.time = d.kind === "夜" ? "23:00" : (d.time || DEFAULT_TIME[d.kind]);
+    else { d.time = ""; d.ot = false; row.querySelector(".ro").checked = false; }
+    row.querySelector(".rt").value = d.time;
+    row.querySelector(".rt").hidden = !work || d.kind === "夜";
+    row.querySelector(".ro-l").hidden = !work;
+  } else if (t.classList.contains("rt")) d.time = normTime(t.value);
+  else if (t.classList.contains("ro")) d.ot = t.checked;
+});
+function saveRoster() {
+  if (!RD.seen) { $("#otbox").scrollIntoView({behavior: "smooth"}); return toast("先看一下國定加班，勾「我看過了」"); }
+  let n = 0;
+  for (const d of RD.days) {   // 這段日期整段覆蓋（不排＝刪掉那天），照電腦版 roster_save
+    if (KINDS.includes(d.kind)) {
+      const work = d.kind in DEFAULT_TIME;
+      DB.shifts[d.date] = {kind: d.kind, time: work ? (d.kind === "夜" ? "23:00" : normTime(d.time) || DEFAULT_TIME[d.kind]) : "",
+                           ot: work && !!d.ot, at: stamp()};
+      n++;
+    } else delete DB.shifts[d.date];
+  }
+  save();
+  month = [+RD.end.slice(0, 4), +RD.end.slice(5, 7)];
+  RD = null;
+  closeSheet();
+  setTab("month");
+  toast(`存好了：${n} 天`);
+}
+
 // ════════════ 事件 ════════════
 document.addEventListener("click", async ev => {
-  const b = ev.target.closest("button, a, .sheet");
+  const b = ev.target.closest("button, a, [data-act], .sheet");
   if (!b) return;
   if (b.id === "sheet" && ev.target === b) return closeSheet();   // 點抽屜外面＝關掉
   if (b.dataset.tab) return setTab(b.dataset.tab);
@@ -337,6 +486,16 @@ document.addEventListener("click", async ev => {
   }
   if (b.dataset.saveday) return saveDay(b.dataset.saveday);
   const act = b.dataset.act;
+  if (act === "shoot") return $("#rfile").click();
+  if (act === "zoom") return b.classList.toggle("zoom");
+  if (act === "rsave") return saveRoster();
+  if (act === "savegem") {
+    DB.settings.gkey = $("#gkey").value.trim();
+    DB.settings.row = Math.max(0, Math.min(40, parseInt($("#grow").value, 10) || 0));
+    DB.settings.name = $("#gname").value.trim().slice(0, 20);
+    save();
+    return toast("存好了");
+  }
   if (act === "import") {
     toast("搬資料中…（要開 Tailscale）", 15000);
     return window.CalBridge.importOld();
